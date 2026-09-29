@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Portfolio Lola Lefevre</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #e8e8e8;
+    }
+
+    #pdf-container {
+      width: 100%;
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      margin: 0 auto 2px auto;
+      background: white;
+    }
+
+    #loading {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 40px;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="loading">Chargement du portfolio…</div>
+<div id="pdf-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+
+<script>
+  const url = "Portfolio.pdf";
+
+  /*
+   * Sur téléphone, on ouvre directement le PDF.
+   * Cela évite de rendre toutes les pages en canvas,
+   * ce qui est très lourd pour un PDF haute définition.
+   */
+  const isMobile =
+    window.matchMedia("(max-width: 767px)").matches ||
+    /Android|iPhone|iPod/i.test(navigator.userAgent);
+
+  if (isMobile) {
+
+    window.location.replace(url);
+
+  } else {
+
+    /*
+     * VERSION ORDINATEUR :
+     * code original conservé.
+     */
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+
+    const container = document.getElementById("pdf-container");
+    const loading = document.getElementById("loading");
+
+    pdfjsLib.getDocument(url).promise.then(async function(pdf) {
+
+      loading.style.display = "none";
+
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+
+        const page = await pdf.getPage(pageNumber);
+
+        const baseViewport = page.getViewport({ scale: 1 });
+
+        const targetWidth = Math.min(
+          window.innerWidth * window.devicePixelRatio,
+          2000
+        );
+
+        const scale = targetWidth / baseViewport.width;
+        const viewport = page.getViewport({ scale: scale });
+
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        container.appendChild(canvas);
+
+        await page.render({
+          canvasContext: context,
+          viewport: viewport
+        }).promise;
+      }
+
+    }).catch(function(error) {
+      loading.innerHTML =
+        'Impossible de charger le portfolio. <a href="Portfolio.pdf">Ouvrir le PDF</a>';
+      console.error(error);
+    });
+
+  }
+</script>
+
+</body>
+</html>
