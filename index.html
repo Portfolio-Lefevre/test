@@ -17,6 +17,11 @@
       background: #e8e8e8;
     }
 
+    #pdf-wrapper {
+      width: 100%;
+      overflow-x: auto;
+    }
+
     #pdf-container {
       width: 100%;
       max-width: 1600px;
@@ -41,21 +46,60 @@
       text-align: center;
       padding: 40px;
     }
+
+    #toolbar {
+      display: none;
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 1000;
+      gap: 6px;
+      padding: 6px;
+      background: rgba(255,255,255,0.94);
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    }
+
+    #toolbar button {
+      border: 0;
+      background: #111;
+      color: #fff;
+      height: 38px;
+      min-width: 38px;
+      padding: 0 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: Arial, sans-serif;
+      font-size: 15px;
+    }
+
+    #zoomReset {
+      min-width: 64px !important;
+    }
   </style>
 </head>
 
 <body>
 
+<div id="toolbar">
+  <button id="zoomOut" aria-label="Dézoomer">−</button>
+  <button id="zoomReset">100%</button>
+  <button id="zoomIn" aria-label="Zoomer">+</button>
+</div>
+
 <div id="loading">Chargement du portfolio…</div>
-<div id="pdf-container"></div>
+
+<div id="pdf-wrapper">
+  <div id="pdf-container"></div>
+</div>
 
 <script>
-  const url = "Portfolio.pdf";
+  const pdfUrl = "Portfolio.pdf";
 
   /*
    * MOBILE
-   * Le PDF est ouvert directement dans le lecteur du téléphone.
-   * PDF.js n'est même pas téléchargé.
+   * Ouverture directe du PDF.
+   * Aucun PDF.js n'est chargé.
    */
   const isMobile =
     window.matchMedia("(max-width: 767px)").matches ||
@@ -63,31 +107,30 @@
 
   if (isMobile) {
 
-    window.location.replace(url);
+    window.location.replace(pdfUrl);
 
   } else {
 
     /*
-     * ORDINATEUR
-     * PDF.js est chargé uniquement maintenant.
+     * PDF.js n'est chargé que sur ordinateur.
      */
     const script = document.createElement("script");
 
     script.src =
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
 
-    script.onload = initPDF;
-    script.onerror = showPDFLink;
+    script.onload = initPortfolio;
+
+    script.onerror = function() {
+      document.getElementById("loading").innerHTML =
+        '<a href="Portfolio.pdf">Ouvrir le portfolio PDF</a>';
+    };
 
     document.head.appendChild(script);
   }
 
-  function showPDFLink() {
-    document.getElementById("loading").innerHTML =
-      'Impossible de charger le portfolio. <a href="Portfolio.pdf">Ouvrir le PDF</a>';
-  }
 
-  async function initPDF() {
+  async function initPortfolio() {
 
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
@@ -95,57 +138,95 @@
     const container =
       document.getElementById("pdf-container");
 
+    const wrapper =
+      document.getElementById("pdf-wrapper");
+
     const loading =
       document.getElementById("loading");
 
-    let pdfDocument;
+    const toolbar =
+      document.getElementById("toolbar");
 
-    const pageElements = [];
-    const renderedPages = new Set();
-    const renderingPages = new Set();
+    const zoomReset =
+      document.getElementById("zoomReset");
+
+    let pdf;
+    let zoom = 1;
+
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 3;
+    const ZOOM_STEP = 0.25;
+
+    const pages = [];
+    const rendering = new Set();
+
 
     /*
-     * Rendu d'une page.
+     * Résolution du canvas.
+     *
+     * 2000 px à l'affichage normal.
+     * Elle augmente avec le zoom.
+     * Limite absolue : 4000 px pour éviter
+     * les canvas gigantesques et les bugs mémoire.
      */
-    async function renderPage(pageNumber) {
+    function getTargetWidth() {
 
+      const normalWidth = Math.min(
+        window.innerWidth * window.devicePixelRatio,
+        2000
+      );
+
+      return Math.min(
+        normalWidth * zoom,
+        4000
+      );
+    }
+
+
+    async function renderPage(pageNumber, force = false) {
+
+      const item = pages[pageNumber - 1];
+
+      if (!item || rendering.has(pageNumber)) {
+        return;
+      }
+
+      const targetWidth = getTargetWidth();
+
+      /*
+       * Ne rerend pas inutilement une page
+       * qui possède déjà une définition suffisante.
+       */
       if (
-        renderedPages.has(pageNumber) ||
-        renderingPages.has(pageNumber)
+        !force &&
+        item.renderedWidth >= targetWidth * 0.95
       ) {
         return;
       }
 
-      renderingPages.add(pageNumber);
+      rendering.add(pageNumber);
 
       try {
 
         const page =
-          await pdfDocument.getPage(pageNumber);
+          await pdf.getPage(pageNumber);
 
         const baseViewport =
           page.getViewport({ scale: 1 });
-
-        /*
-         * Même limite de qualité que ton code original :
-         * jusqu'à 2000 pixels de large.
-         */
-        const targetWidth = Math.min(
-          window.innerWidth * window.devicePixelRatio,
-          2000
-        );
 
         const scale =
           targetWidth / baseViewport.width;
 
         const viewport =
-          page.getViewport({ scale: scale });
+          page.getViewport({ scale });
 
         const canvas =
           document.createElement("canvas");
 
         const context =
-          canvas.getContext("2d");
+          canvas.getContext("2d", {
+            alpha: false
+          });
 
         canvas.width =
           Math.floor(viewport.width);
@@ -153,18 +234,15 @@
         canvas.height =
           Math.floor(viewport.height);
 
-        const holder =
-          pageElements[pageNumber - 1];
-
-        holder.innerHTML = "";
-        holder.appendChild(canvas);
-
         await page.render({
           canvasContext: context,
           viewport: viewport
         }).promise;
 
-        renderedPages.add(pageNumber);
+        item.holder.replaceChildren(canvas);
+
+        item.renderedWidth =
+          targetWidth;
 
       } catch (error) {
 
@@ -175,46 +253,132 @@
 
       } finally {
 
-        renderingPages.delete(pageNumber);
-
+        rendering.delete(pageNumber);
       }
     }
 
+
+    /*
+     * Rend seulement les pages proches
+     * de la zone actuellement consultée.
+     */
+    function renderNearbyPages(force = false) {
+
+      pages.forEach(function(item, index) {
+
+        const rect =
+          item.holder.getBoundingClientRect();
+
+        if (
+          rect.bottom > -1500 &&
+          rect.top < window.innerHeight + 2500
+        ) {
+
+          renderPage(
+            index + 1,
+            force
+          );
+        }
+      });
+    }
+
+
+    /*
+     * ZOOM
+     *
+     * La largeur physique augmente immédiatement.
+     * Seules les pages proches sont ensuite
+     * recalculées en meilleure définition.
+     */
+    function applyZoom() {
+
+      container.style.width =
+        (zoom * 100) + "%";
+
+      container.style.maxWidth =
+        (1600 * zoom) + "px";
+
+      zoomReset.textContent =
+        Math.round(zoom * 100) + "%";
+
+      renderNearbyPages(false);
+    }
+
+
+    document.getElementById("zoomIn").onclick =
+      function() {
+
+        if (zoom >= MAX_ZOOM) return;
+
+        zoom =
+          Math.min(
+            MAX_ZOOM,
+            zoom + ZOOM_STEP
+          );
+
+        applyZoom();
+      };
+
+
+    document.getElementById("zoomOut").onclick =
+      function() {
+
+        if (zoom <= MIN_ZOOM) return;
+
+        zoom =
+          Math.max(
+            MIN_ZOOM,
+            zoom - ZOOM_STEP
+          );
+
+        applyZoom();
+      };
+
+
+    document.getElementById("zoomReset").onclick =
+      function() {
+
+        zoom = 1;
+
+        container.style.width = "100%";
+        container.style.maxWidth = "1600px";
+
+        zoomReset.textContent = "100%";
+
+        wrapper.scrollLeft = 0;
+      };
+
+
     try {
 
-      /*
-       * Chargement du document.
-       */
-      pdfDocument =
-        await pdfjsLib.getDocument(url).promise;
+      pdf =
+        await pdfjsLib.getDocument(pdfUrl).promise;
 
       /*
-       * On récupère les dimensions réelles
-       * de la première page.
+       * Dimensions de référence.
        */
       const firstPage =
-        await pdfDocument.getPage(1);
+        await pdf.getPage(1);
 
       const firstViewport =
         firstPage.getViewport({ scale: 1 });
 
+
       /*
-       * Création immédiate de l'espace des pages.
-       * Pas encore de rendu lourd.
+       * Réserve immédiatement l'emplacement
+       * de toutes les pages.
        */
       for (
-        let pageNumber = 1;
-        pageNumber <= pdfDocument.numPages;
-        pageNumber++
+        let i = 1;
+        i <= pdf.numPages;
+        i++
       ) {
 
         const holder =
           document.createElement("div");
 
-        holder.className = "pdf-page";
-
-        holder.dataset.pageNumber =
-          pageNumber;
+        holder.className =
+          "pdf-page";
 
         holder.style.aspectRatio =
           firstViewport.width +
@@ -223,98 +387,77 @@
 
         container.appendChild(holder);
 
-        pageElements.push(holder);
+        pages.push({
+          holder: holder,
+          renderedWidth: 0
+        });
       }
 
+
       /*
-       * PRIORITÉ N°1 :
+       * PRIORITÉ :
        * couverture.
        */
       await renderPage(1);
 
-      /*
-       * Dès que la couverture existe,
-       * le message disparaît.
-       */
-      loading.style.display = "none";
+      loading.style.display =
+        "none";
+
+      toolbar.style.display =
+        "flex";
+
 
       /*
-       * On prépare immédiatement
-       * les pages 2 à 5.
+       * Précharge immédiatement les
+       * quatre pages suivantes.
        */
-      const initialPreload =
-        Math.min(5, pdfDocument.numPages);
-
       for (
-        let pageNumber = 2;
-        pageNumber <= initialPreload;
-        pageNumber++
+        let i = 2;
+        i <= Math.min(5, pdf.numPages);
+        i++
       ) {
-        renderPage(pageNumber);
+        renderPage(i);
       }
 
+
       /*
-       * Les pages suivantes sont préparées
-       * avant que le lecteur arrive dessus.
+       * Préchargement progressif pendant
+       * la consultation.
        */
-      const observer =
-        new IntersectionObserver(
+      let scrollTimer;
 
-          function(entries) {
+      window.addEventListener(
+        "scroll",
+        function() {
 
-            entries.forEach(function(entry) {
+          clearTimeout(scrollTimer);
 
-              if (!entry.isIntersecting) {
-                return;
-              }
+          scrollTimer =
+            setTimeout(
+              function() {
+                renderNearbyPages(false);
+              },
+              80
+            );
+        },
+        {
+          passive: true
+        }
+      );
 
-              const currentPage =
-                Number(
-                  entry.target.dataset.pageNumber
-                );
 
-              /*
-               * Page actuelle + 3 suivantes.
-               */
-              for (
-                let pageNumber = currentPage;
-                pageNumber <= currentPage + 3;
-                pageNumber++
-              ) {
+      /*
+       * Premier préchargement.
+       */
+      renderNearbyPages(false);
 
-                if (
-                  pageNumber <=
-                  pdfDocument.numPages
-                ) {
-                  renderPage(pageNumber);
-                }
-              }
-
-            });
-
-          },
-
-          {
-            root: null,
-
-            /*
-             * Anticipe largement le scroll.
-             */
-            rootMargin: "2500px 0px",
-
-            threshold: 0.01
-          }
-        );
-
-      pageElements.forEach(function(holder) {
-        observer.observe(holder);
-      });
 
     } catch (error) {
 
       console.error(error);
-      showPDFLink();
 
+      loading.innerHTML =
+        '<a href="Portfolio.pdf">Ouvrir le portfolio PDF</a>';
     }
   }
 </script>
