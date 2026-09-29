@@ -23,11 +23,16 @@
       margin: 0 auto;
     }
 
+    .pdf-page {
+      width: 100%;
+      margin: 0 auto 2px auto;
+      background: white;
+    }
+
     canvas {
       display: block;
       width: 100%;
       height: auto;
-      margin: 0 auto 2px auto;
       background: white;
     }
 
@@ -44,15 +49,13 @@
 <div id="loading">Chargement du portfolio…</div>
 <div id="pdf-container"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-
 <script>
   const url = "Portfolio.pdf";
 
   /*
-   * Sur téléphone, on ouvre directement le PDF.
-   * Cela évite de rendre toutes les pages en canvas,
-   * ce qui est très lourd pour un PDF haute définition.
+   * MOBILE
+   * Le PDF est ouvert directement dans le lecteur du téléphone.
+   * PDF.js n'est même pas téléchargé.
    */
   const isMobile =
     window.matchMedia("(max-width: 767px)").matches ||
@@ -65,54 +68,254 @@
   } else {
 
     /*
-     * VERSION ORDINATEUR :
-     * code original conservé.
+     * ORDINATEUR
+     * PDF.js est chargé uniquement maintenant.
      */
+    const script = document.createElement("script");
+
+    script.src =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
+
+    script.onload = initPDF;
+    script.onerror = showPDFLink;
+
+    document.head.appendChild(script);
+  }
+
+  function showPDFLink() {
+    document.getElementById("loading").innerHTML =
+      'Impossible de charger le portfolio. <a href="Portfolio.pdf">Ouvrir le PDF</a>';
+  }
+
+  async function initPDF() {
 
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
 
-    const container = document.getElementById("pdf-container");
-    const loading = document.getElementById("loading");
+    const container =
+      document.getElementById("pdf-container");
 
-    pdfjsLib.getDocument(url).promise.then(async function(pdf) {
+    const loading =
+      document.getElementById("loading");
 
-      loading.style.display = "none";
+    let pdfDocument;
 
-      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+    const pageElements = [];
+    const renderedPages = new Set();
+    const renderingPages = new Set();
 
-        const page = await pdf.getPage(pageNumber);
+    /*
+     * Rendu d'une page.
+     */
+    async function renderPage(pageNumber) {
 
-        const baseViewport = page.getViewport({ scale: 1 });
+      if (
+        renderedPages.has(pageNumber) ||
+        renderingPages.has(pageNumber)
+      ) {
+        return;
+      }
 
+      renderingPages.add(pageNumber);
+
+      try {
+
+        const page =
+          await pdfDocument.getPage(pageNumber);
+
+        const baseViewport =
+          page.getViewport({ scale: 1 });
+
+        /*
+         * Même limite de qualité que ton code original :
+         * jusqu'à 2000 pixels de large.
+         */
         const targetWidth = Math.min(
           window.innerWidth * window.devicePixelRatio,
           2000
         );
 
-        const scale = targetWidth / baseViewport.width;
-        const viewport = page.getViewport({ scale: scale });
+        const scale =
+          targetWidth / baseViewport.width;
 
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d");
+        const viewport =
+          page.getViewport({ scale: scale });
 
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
+        const canvas =
+          document.createElement("canvas");
 
-        container.appendChild(canvas);
+        const context =
+          canvas.getContext("2d");
+
+        canvas.width =
+          Math.floor(viewport.width);
+
+        canvas.height =
+          Math.floor(viewport.height);
+
+        const holder =
+          pageElements[pageNumber - 1];
+
+        holder.innerHTML = "";
+        holder.appendChild(canvas);
 
         await page.render({
           canvasContext: context,
           viewport: viewport
         }).promise;
+
+        renderedPages.add(pageNumber);
+
+      } catch (error) {
+
+        console.error(
+          "Erreur page " + pageNumber,
+          error
+        );
+
+      } finally {
+
+        renderingPages.delete(pageNumber);
+
+      }
+    }
+
+    try {
+
+      /*
+       * Chargement du document.
+       */
+      pdfDocument =
+        await pdfjsLib.getDocument(url).promise;
+
+      /*
+       * On récupère les dimensions réelles
+       * de la première page.
+       */
+      const firstPage =
+        await pdfDocument.getPage(1);
+
+      const firstViewport =
+        firstPage.getViewport({ scale: 1 });
+
+      /*
+       * Création immédiate de l'espace des pages.
+       * Pas encore de rendu lourd.
+       */
+      for (
+        let pageNumber = 1;
+        pageNumber <= pdfDocument.numPages;
+        pageNumber++
+      ) {
+
+        const holder =
+          document.createElement("div");
+
+        holder.className = "pdf-page";
+
+        holder.dataset.pageNumber =
+          pageNumber;
+
+        holder.style.aspectRatio =
+          firstViewport.width +
+          " / " +
+          firstViewport.height;
+
+        container.appendChild(holder);
+
+        pageElements.push(holder);
       }
 
-    }).catch(function(error) {
-      loading.innerHTML =
-        'Impossible de charger le portfolio. <a href="Portfolio.pdf">Ouvrir le PDF</a>';
-      console.error(error);
-    });
+      /*
+       * PRIORITÉ N°1 :
+       * couverture.
+       */
+      await renderPage(1);
 
+      /*
+       * Dès que la couverture existe,
+       * le message disparaît.
+       */
+      loading.style.display = "none";
+
+      /*
+       * On prépare immédiatement
+       * les pages 2 à 5.
+       */
+      const initialPreload =
+        Math.min(5, pdfDocument.numPages);
+
+      for (
+        let pageNumber = 2;
+        pageNumber <= initialPreload;
+        pageNumber++
+      ) {
+        renderPage(pageNumber);
+      }
+
+      /*
+       * Les pages suivantes sont préparées
+       * avant que le lecteur arrive dessus.
+       */
+      const observer =
+        new IntersectionObserver(
+
+          function(entries) {
+
+            entries.forEach(function(entry) {
+
+              if (!entry.isIntersecting) {
+                return;
+              }
+
+              const currentPage =
+                Number(
+                  entry.target.dataset.pageNumber
+                );
+
+              /*
+               * Page actuelle + 3 suivantes.
+               */
+              for (
+                let pageNumber = currentPage;
+                pageNumber <= currentPage + 3;
+                pageNumber++
+              ) {
+
+                if (
+                  pageNumber <=
+                  pdfDocument.numPages
+                ) {
+                  renderPage(pageNumber);
+                }
+              }
+
+            });
+
+          },
+
+          {
+            root: null,
+
+            /*
+             * Anticipe largement le scroll.
+             */
+            rootMargin: "2500px 0px",
+
+            threshold: 0.01
+          }
+        );
+
+      pageElements.forEach(function(holder) {
+        observer.observe(holder);
+      });
+
+    } catch (error) {
+
+      console.error(error);
+      showPDFLink();
+
+    }
   }
 </script>
 
